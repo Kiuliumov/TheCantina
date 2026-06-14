@@ -1,8 +1,14 @@
+from datetime import date
 from django.contrib.auth.models import AbstractUser
-from django.contrib.contenttypes.fields import GenericForeignKey
-from django.contrib.contenttypes.models import ContentType
-from django.core.validators import MaxValueValidator, MinValueValidator
+from django.core.exceptions import ValidationError
+from django.core.validators import (
+    MaxValueValidator,
+    MinValueValidator,
+    MinLengthValidator,
+    URLValidator,
+)
 from django.db import models
+from django.utils import timezone
 
 
 class User(AbstractUser):
@@ -81,7 +87,11 @@ class Hobby(models.Model):
         VOLUNTEERING = "VOLUNTEERING", "Volunteering"
         PETS = "PETS", "Pets"
 
-    name = models.CharField(max_length=50, unique=True, choices=HobbyChoices.choices)
+    name = models.CharField(
+        max_length=50,
+        unique=True,
+        choices=HobbyChoices.choices,
+    )
 
     def __str__(self):
         return self.name
@@ -92,24 +102,16 @@ class Profile(models.Model):
     class GenderChoices(models.TextChoices):
         MALE = "M", "Male"
         FEMALE = "F", "Female"
-
         NON_BINARY = "NB", "Non-binary"
-
         AGENDER = "AG", "Agender"
-
         GENDERFLUID = "GF", "Genderfluid"
         GENDERQUEER = "GQ", "Genderqueer"
-
         BIGENDER = "BG", "Bigender"
-
         DEMIBOY = "DB", "Demiboy"
         DEMIGIRL = "DG", "Demigirl"
-
         TRANS_MAN = "TM", "Trans Man"
         TRANS_WOMAN = "TW", "Trans Woman"
-
         INTERSEX = "IX", "Intersex"
-
         OTHER = "OT", "Other"
         PREFER_NOT_TO_SAY = "PN", "Prefer not to say"
 
@@ -119,21 +121,32 @@ class Profile(models.Model):
         related_name="profile",
     )
 
-    display_name = models.CharField(max_length=50, blank=True)
-    profile_picture_url = models.URLField(blank=True)
-    bio = models.TextField(blank=True)
-    date_of_birth = models.DateField(null=True, blank=True)
+    display_name = models.CharField(
+        max_length=50,
+        blank=True,
+        validators=[MinLengthValidator(2)],
+    )
 
-    age = models.IntegerField(
-        validators=[
-            MinValueValidator(13),
-            MaxValueValidator(110),
-        ]
+    profile_picture_url = models.URLField(
+        blank=True,
+        validators=[URLValidator()],
+    )
+
+    bio = models.TextField(
+        blank=True,
+        max_length=500,
+    )
+
+    date_of_birth = models.DateField(
+        null=True,
+        blank=True,
     )
 
     gender = models.CharField(
         choices=GenderChoices.choices,
         max_length=2,
+        blank=True,
+        default=GenderChoices.PREFER_NOT_TO_SAY,
     )
 
     location = models.CharField(max_length=100, blank=True)
@@ -145,14 +158,16 @@ class Profile(models.Model):
         related_name="profiles",
     )
 
-    instagram = models.CharField(max_length=50, blank=True)
-    twitter = models.CharField(max_length=50, blank=True)  # X handle
+    instagram = models.CharField(max_length=30, blank=True)
+    twitter = models.CharField(max_length=30, blank=True)
     facebook = models.CharField(max_length=100, blank=True)
-    tiktok = models.CharField(max_length=50, blank=True)
+    tiktok = models.CharField(max_length=30, blank=True)
     youtube = models.CharField(max_length=100, blank=True)
 
     discord_username = models.CharField(
-        max_length=100, blank=True, help_text="e.g. username or username#1234 (legacy) or username"
+        max_length=100,
+        blank=True,
+        help_text="e.g. username or username#1234 (legacy)",
     )
 
     github = models.CharField(max_length=50, blank=True)
@@ -166,9 +181,32 @@ class Profile(models.Model):
     show_location = models.BooleanField(default=True)
     show_hobbies = models.BooleanField(default=True)
     is_verified = models.BooleanField(default=False)
+
     last_seen = models.DateTimeField(null=True, blank=True)
     is_online = models.BooleanField(default=False)
-    cantina_score = models.FloatField(default=0)
+
+    cantina_score = models.FloatField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+
+    def clean(self):
+        if self.last_seen and self.last_seen > timezone.now():
+            raise ValidationError("last_seen cannot be in the future")
+
+        if self.date_of_birth:
+            today = date.today()
+            age = (
+                today.year
+                - self.date_of_birth.year
+                - ((today.month, today.day) < (self.date_of_birth.month, self.date_of_birth.day))
+            )
+
+            if age < 13:
+                raise ValidationError("User must be at least 13 years old.")
+
+        if self.display_name and len(self.display_name.strip()) < 2:
+            raise ValidationError("Display name too short.")
 
     def __str__(self):
         return self.display_name or self.user.username
@@ -179,7 +217,6 @@ class Follow(models.Model):
     class Status(models.TextChoices):
         FOLLOWING = "FOLLOWING", "Following"
         PENDING = "PENDING", "Pending"
-        REQUESTED = "REQUESTED", "Requested"
 
     follower = models.ForeignKey(
         User,
@@ -236,44 +273,26 @@ class Block(models.Model):
     def __str__(self):
         return f"{self.blocker} blocked {self.blocked}"
 
-    class ProfileComment(models.Model):
-        profile = models.ForeignKey(
-            Profile,
-            on_delete=models.CASCADE,
-            related_name="comments",
-        )
 
-        author = models.ForeignKey(
-            User,
-            on_delete=models.CASCADE,
-            related_name="profile_comments",
-        )
+class ProfileComment(models.Model):
+    profile = models.ForeignKey(
+        Profile,
+        on_delete=models.CASCADE,
+        related_name="comments",
+    )
 
-        text = models.TextField()
+    author = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="profile_comments",
+    )
 
-        created_at = models.DateTimeField(auto_now_add=True)
-
-        class Meta:
-            ordering = ["-created_at"]
-
-        def __str__(self):
-            return f"{self.author} -> {self.profile}"
-
-
-class Like(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-
-    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
-    object_id = models.PositiveIntegerField()
-
-    content_object = GenericForeignKey("content_type", "object_id")
+    text = models.TextField(max_length=1000)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["user", "content_type", "object_id"],
-                name="unique_like",
-            )
-        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.author} -> {self.profile}"
